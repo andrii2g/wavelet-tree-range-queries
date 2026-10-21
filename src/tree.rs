@@ -1,4 +1,11 @@
+use std::time::{Duration, Instant};
 use std::{fmt, mem::size_of, ops::Range};
+
+#[derive(Debug, Clone, Copy)]
+pub struct BuildTimings {
+    pub compression: Duration,
+    pub construction: Duration,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueryError {
@@ -132,6 +139,12 @@ pub struct WaveletTree {
 }
 impl WaveletTree {
     pub fn new(values: &[u64]) -> Self {
+        Self::new_with_timings(values).0
+    }
+    /// Compression includes alphabet sorting and mapping values to codes.
+    /// Construction excludes destruction of the temporary codes buffer.
+    pub fn new_with_timings(values: &[u64]) -> (Self, BuildTimings) {
+        let start = Instant::now();
         let mut alphabet = values.to_vec();
         alphabet.sort_unstable();
         alphabet.dedup();
@@ -140,16 +153,25 @@ impl WaveletTree {
             .iter()
             .map(|v| alphabet.binary_search(v).unwrap())
             .collect();
+        let compression = start.elapsed();
+        let start = Instant::now();
         let root = if alphabet.is_empty() {
             None
         } else {
             Some(Node::build(&codes, 0, alphabet.len(), &mut 0))
         };
-        Self {
-            alphabet,
-            root,
-            len: values.len(),
-        }
+        let construction = start.elapsed();
+        (
+            Self {
+                alphabet,
+                root,
+                len: values.len(),
+            },
+            BuildTimings {
+                compression,
+                construction,
+            },
+        )
     }
     pub fn len(&self) -> usize {
         self.len
@@ -439,4 +461,50 @@ fn count<const TRACE: bool>(
     }
     count::<TRACE>(node.left.as_deref().unwrap(), l, limit, depth + 1, trace)
         + count::<TRACE>(node.right.as_deref().unwrap(), r, limit, depth + 1, trace)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn partition_bits_and_prefixes_across_word_boundaries() {
+        fn check(node: &Node, codes: &[usize]) {
+            assert_eq!(node.len, codes.len());
+            if node.hi - node.lo == 1 {
+                assert!(codes.iter().all(|&code| code == node.lo));
+                return;
+            }
+            let mid = node.lo + (node.hi - node.lo) / 2;
+            let mut ones = 0;
+            let (mut l, mut r) = (vec![], vec![]);
+            for (i, &code) in codes.iter().enumerate() {
+                assert_eq!(node.prefix[i], ones);
+                assert_eq!(node.bit(i), code >= mid);
+                if code >= mid {
+                    ones += 1;
+                    r.push(code);
+                } else {
+                    l.push(code);
+                }
+            }
+            assert_eq!(node.prefix[codes.len()], ones);
+            check(node.left.as_deref().unwrap(), &l);
+            check(node.right.as_deref().unwrap(), &r);
+        }
+        let values: Vec<_> = (0..193).map(|i| (i * 37 % 19) as u64).collect();
+        let tree = WaveletTree::new(&values);
+        let codes: Vec<_> = values
+            .iter()
+            .map(|v| tree.alphabet.binary_search(v).unwrap())
+            .collect();
+        check(tree.root.as_deref().unwrap(), &codes);
+        for end in [0, 63, 64, 65, 127, 128, 129, 193] {
+            for v in 0..20 {
+                assert_eq!(
+                    tree.rank(v, end).unwrap(),
+                    values[..end].iter().filter(|&&x| x == v).count()
+                );
+            }
+        }
+    }
 }

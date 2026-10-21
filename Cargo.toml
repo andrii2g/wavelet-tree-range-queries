@@ -2,6 +2,7 @@
 name = "wavelet-tree-range-queries"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 description = "Static integer range queries with inspectable wavelet tree traces"
 
 [lib]
